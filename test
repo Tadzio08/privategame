@@ -8,7 +8,7 @@ BG_COLOR = (10, 10, 25)
 class Network:
     def __init__(self):
         self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server = "127.0.0.1" 
+        self.server = "192.169.0.111" 
         self.port = 5555
         self.p = self.connect()
 
@@ -24,11 +24,6 @@ class Network:
             return pickle.loads(self.client.recv(4096))
         except: return None
 
-def draw_arcade_effects(screen):
-    # Scanlines for that "Old TV" look
-    for i in range(0, HEIGHT, 4):
-        pygame.draw.line(screen, (0, 0, 0, 50), (0, i), (WIDTH, i))
-
 def main():
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -41,7 +36,7 @@ def main():
     my_y, voted = 315, False
 
     while True:
-        # 1. SEND DATA
+        # 1. PREPARE DATA
         input_data = my_y
         if not voted:
             keys = pygame.key.get_pressed()
@@ -53,26 +48,38 @@ def main():
 
         screen.fill(BG_COLOR)
 
-        # 2. RENDER MODES
         if game_state["mode"] == "voting":
-            msg = font_lg.render("VOTE GAMEMODE", True, (255, 255, 255))
-            screen.blit(msg, (WIDTH//2 - 300, 200))
-            sub = font_sm.render("[1] NORMAL PONG    [2] CHAOS SPEED", True, (0, 255, 255))
-            screen.blit(sub, (WIDTH//2 - 220, 350))
-            if voted:
-                wait = font_sm.render("WAITING FOR OTHER PLAYER...", True, (255, 255, 0))
-                screen.blit(wait, (WIDTH//2 - 180, 500))
-
+            # --- VOTING UI ---
+            txt = font_lg.render("CHOOSE MODE", True, (255, 255, 255))
+            screen.blit(txt, (WIDTH//2 - 250, 200))
+            sub = font_sm.render("[1] CLASSIC    [2] CHAOS", True, (0, 255, 255))
+            screen.blit(sub, (WIDTH//2 - 180, 350))
         else:
-            # Draw Bricks (Solid/Dull)
+            # --- GAMEPLAY UI ---
+            # Draw Bricks
             for b in game_state["bricks"]:
-                if b[4]: pygame.draw.rect(screen, (60, 60, 80), (b[0], b[1], b[2], b[3]))
+                if b[4]:
+                    pygame.draw.rect(screen, (50, 50, 70), (b[0], b[1], b[2], b[3]), border_radius=5)
+                    pygame.draw.rect(screen, (100, 100, 150), (b[0], b[1], b[2], b[3]), 2, border_radius=5)
 
-            # Draw Crates (Bright/Glowing)
+            # Draw Crates (The Power-ups)
             for c in game_state["crates"]:
-                color = (255, 255, 0) # Bright Yellow
-                pygame.draw.rect(screen, color, (c[0], c[1], 30, 30))
-                pygame.draw.rect(screen, (255, 255, 255), (c[0], c[1], 30, 30), 2) # White border
+                # Pulsing Glow Effect
+                pulse = (pygame.time.get_ticks() // 200) % 2 * 50
+                pygame.draw.rect(screen, (255, 255, 0), (c[0], c[1], 35, 35), border_radius=8)
+                pygame.draw.rect(screen, (255, 255, 255), (c[0], c[1], 35, 35), 2 + (pulse//50))
+                label = font_sm.render(c[2][0], True, (0, 0, 0)) # First letter (B or S)
+                screen.blit(label, (c[0]+10, c[1]+5))
+
+            # Draw Ball
+            bx, by = game_state["ball_pos"]
+            pygame.draw.circle(screen, (255, 255, 255), (int(bx), int(by)), 12)
+            # Inner ball glow
+            pygame.draw.circle(screen, (0, 255, 255), (int(bx), int(by)), 12, 2)
+
+            # Draw Paddles
+            pygame.draw.rect(screen, (0, 255, 255), (40, game_state["p1_y"], 15, game_state["p1_h"]), border_radius=8)
+            pygame.draw.rect(screen, (255, 0, 255), (WIDTH-55, game_state["p2_y"], 15, game_state["p2_h"]), border_radius=8)
 
             # Draw Scores
             s1 = font_lg.render(str(game_state["p1_score"]), True, (0, 255, 255))
@@ -80,18 +87,14 @@ def main():
             s2 = font_lg.render(str(game_state["p2_score"]), True, (255, 0, 255))
             screen.blit(s2, (WIDTH*3//4, 50))
 
-            # Draw Ball & Paddles
-            bx, by = game_state["ball_pos"]
-            pygame.draw.circle(screen, (255, 255, 255), (int(bx), int(by)), 12)
-            pygame.draw.rect(screen, (0, 255, 255), (40, game_state["p1_y"], 15, game_state["p1_h"]))
-            pygame.draw.rect(screen, (255, 0, 255), (WIDTH-55, game_state["p2_y"], 15, game_state["p2_h"]))
+        # SCANLINES
+        for i in range(0, HEIGHT, 4):
+            pygame.draw.line(screen, (0, 0, 0), (0, i), (WIDTH, i), 1)
 
-        draw_arcade_effects(screen)
-        
-        # 3. MOVEMENT
+        # MOVEMENT
         keys = pygame.key.get_pressed()
         if keys[pygame.K_w] and my_y > 0: my_y -= 12
-        if keys[pygame.K_s] and my_y < HEIGHT - 120: my_y += 12
+        if keys[pygame.K_s] and my_y < HEIGHT - game_state.get("p1_h", 120): my_y += 12
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT: return
