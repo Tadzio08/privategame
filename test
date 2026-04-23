@@ -1,16 +1,18 @@
-import pygame
 import socket
 import pickle
+import pygame
 
+# --- CONFIG ---
 WIDTH, HEIGHT = 1200, 750
 BG_COLOR = (10, 10, 18)
 P1_COLOR = (0, 255, 255)
 P2_COLOR = (255, 0, 255)
+ACCENT = (255, 255, 0)
 
 class Network:
     def __init__(self):
         self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server = "127.0.0.1" 
+        self.server = "192.169.0.111" 
         self.port = 5555
         self.p = self.connect()
 
@@ -18,13 +20,17 @@ class Network:
         try:
             self.client.connect((self.server, self.port))
             return pickle.loads(self.client.recv(4096))
-        except: return None
+        except Exception as e:
+            print(f"Connection error: {e}")
+            return None
 
     def send(self, data):
         try:
             self.client.send(pickle.dumps(data))
             return pickle.loads(self.client.recv(4096))
-        except: return None
+        except socket.error as e:
+            print(e)
+            return None
 
 def draw_neon_rect(surf, color, rect):
     pygame.draw.rect(surf, color, rect, border_radius=8)
@@ -33,50 +39,81 @@ def draw_neon_rect(surf, color, rect):
 
 def main():
     pygame.init()
+    n = Network()
+    
+    if n.p is None:
+        print("Could not connect to server.")
+        return
+
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
     clock = pygame.time.Clock()
+    font_small = pygame.font.SysFont("Arial", 20)
     font_score = pygame.font.SysFont("Consolas", 60, bold=True)
     font_msg = pygame.font.SysFont("Consolas", 30)
+    
+    my_y = 315 # Initial position
+    run = True
 
-    n = Network()
-    if n.p is None: return
+    while run:
+        clock.tick(60)
         
-    my_y = 315 
-
-    while True:
+        # 1. SEND MY POSITION & GET FULL GAME STATE
         game_state = n.send(my_y)
-        if not game_state: continue
-            
+
+        if not game_state or not isinstance(game_state, dict):
+            continue
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                run = False
+
+        # INPUTS
+        keys = pygame.key.get_pressed()
+        if keys[pygame.K_w] and my_y > 0: 
+            my_y -= 10
+        if keys[pygame.K_s] and my_y < HEIGHT - 120: 
+            my_y += 10
+
+        # DRAWING
         screen.fill(BG_COLOR)
-        
+
+        # 2. DRAW THE GRID
+        for i in range(0, WIDTH, 100):
+            pygame.draw.line(screen, (20, 20, 35), (i, 0), (i, HEIGHT))
+        for i in range(0, HEIGHT, 100):
+            pygame.draw.line(screen, (20, 20, 35), (0, i), (WIDTH, i))
+
         # Draw Score
         s1 = font_score.render(str(game_state["p1_score"]), True, P1_COLOR)
         s2 = font_score.render(str(game_state["p2_score"]), True, P2_COLOR)
         screen.blit(s1, (WIDTH//4, 50))
         screen.blit(s2, (WIDTH*3//4, 50))
 
-        # Waiting Message
+        # 3. DRAW PLAYERS
+        p1_rect = pygame.Rect(40, game_state.get("p1_y", 315), 15, 120)
+        p2_rect = pygame.Rect(WIDTH-55, game_state.get("p2_y", 315), 15, 120)
+        draw_neon_rect(screen, P1_COLOR, p1_rect)
+        draw_neon_rect(screen, P2_COLOR, p2_rect)
+
+        # 4. DRAW BALL
+        b_pos = game_state["ball_pos"]
+        ball_color = (100, 100, 255) if game_state.get("ball_ghost") else (255, 255, 255)
+        pygame.draw.circle(screen, ball_color, (int(b_pos[0]), int(b_pos[1])), 10)
+
+        # 5. DRAW CRATES
+        for c in game_state.get("crates", []):
+            c_rect = pygame.Rect(c[0], c[1], 40, 40)
+            pygame.draw.rect(screen, ACCENT, c_rect, 2, border_radius=5)
+            txt = font_small.render(c[2][0], True, ACCENT)
+            screen.blit(txt, (c[0]+12, c[1]+10))
+
         if not game_state["active"]:
             msg = font_msg.render("WAITING FOR BOTH PLAYERS...", True, (255, 255, 255))
             screen.blit(msg, (WIDTH//2 - 200, HEIGHT//2 + 50))
 
-        # Draw Paddles
-        draw_neon_rect(screen, P1_COLOR, pygame.Rect(40, game_state["p1_y"], 15, 120))
-        draw_neon_rect(screen, P2_COLOR, pygame.Rect(WIDTH-55, game_state["p2_y"], 15, 120))
-
-        # Draw Ball
-        bx, by = game_state["ball_pos"]
-        pygame.draw.circle(screen, (255, 255, 255), (int(bx), int(by)), 10)
-
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT: return
-
-        keys = pygame.key.get_pressed()
-        if keys[pygame.K_w] and my_y > 0: my_y -= 10
-        if keys[pygame.K_s] and my_y < HEIGHT - 120: my_y += 10
-
         pygame.display.flip()
-        clock.tick(60)
+
+    pygame.quit()
 
 if __name__ == "__main__":
     main()
