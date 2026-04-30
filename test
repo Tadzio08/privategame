@@ -1,89 +1,362 @@
 import pygame
 import socket
 import pickle
+import math
 
 WIDTH, HEIGHT = 1200, 750
 
+# ── Palette ──────────────────────────────────────────────
+BG       = (6,   7,  18)
+CYAN     = (0,  230, 220)
+MAGENTA  = (230,  0, 200)
+WHITE    = (255, 255, 255)
+GRAY     = (80,  85, 110)
+DIM      = (30,  35,  60)
+GREEN    = (30,  230, 120)
+ORANGE   = (255, 160,  30)
+RED      = (255,  55,  55)
+PURPLE   = (170,  40, 255)
+BLUE     = (60,  120, 255)
+YELLOW   = (255, 220,  40)
+
+# ── Powerup config ───────────────────────────────────────
+PU_COLORS = {
+    "BIG":    (30,  230, 120),   # green
+    "WALL":   (60,  150, 255),   # blue
+    "FAKE":   (170,  40, 255),   # purple
+    "SPEED":  (255, 160,  30),   # orange
+    "SHRINK": (255,  55,  55),   # red
+    "SLOW":   (80,  120, 255),   # indigo
+    "MULTI":  (255, 220,  40),   # yellow
+}
+PU_ICON = {
+    "BIG": "▲", "WALL": "█", "FAKE": "◈",
+    "SPEED": "▶", "SHRINK": "▼", "SLOW": "◉", "MULTI": "✦",
+}
+PU_DESC = {
+    "BIG":    "Big Paddle",
+    "WALL":   "Force Wall",
+    "FAKE":   "Spawn Fakes",
+    "SPEED":  "Speed Up",
+    "SHRINK": "Shrink Enemy",
+    "SLOW":   "Slow Ball",
+    "MULTI":  "Multi Ball",
+}
+
+# ─────────────────────────────────────────────────────────
 class Network:
     def __init__(self):
         self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server = "127.0.0.1"
-        self.port = 5555
-        self.p = self.connect()
+        self.port   = 5555
+        self.p      = self._connect()
 
-    def connect(self):
+    def _connect(self):
         try:
-            self.client.connect((self.server, self.port)); return pickle.loads(self.client.recv(4096))
-        except: return None
+            self.client.connect((self.server, self.port))
+            return pickle.loads(self.client.recv(4096))
+        except:
+            return None
 
     def send(self, data):
         try:
             self.client.send(pickle.dumps(data))
-            resp = self.client.recv(4096)
-            if not resp: return "DISCONNECTED"
-            return pickle.loads(resp)
-        except: return "DISCONNECTED"
+            resp = self.client.recv(8192)
+            return pickle.loads(resp) if resp else "DISCONNECTED"
+        except:
+            return "DISCONNECTED"
 
+# ─── Drawing helpers ──────────────────────────────────────
+_glow_cache: dict = {}
+
+def get_circle_glow(radius: int, color: tuple, alpha: int = 55) -> pygame.Surface:
+    key = (radius, color, alpha)
+    if key not in _glow_cache:
+        size = radius * 6
+        surf = pygame.Surface((size, size), pygame.SRCALPHA)
+        cx = size // 2
+        layers = [(radius * 3, alpha // 4), (radius * 2, alpha // 2), (radius + 4, alpha)]
+        for r, a in layers:
+            pygame.draw.circle(surf, (*color, a), (cx, cx), r)
+        _glow_cache[key] = surf
+    return _glow_cache[key]
+
+def draw_glowing_circle(surf, color, pos, radius, alpha=55):
+    glow = get_circle_glow(radius, color, alpha)
+    cx = glow.get_width() // 2
+    surf.blit(glow, (pos[0] - cx, pos[1] - cx))
+    pygame.draw.circle(surf, color, pos, radius)
+
+def draw_glowing_paddle(surf, color, rect, br=7):
+    x, y, w, h = rect
+    for expand in [12, 6, 2]:
+        g = pygame.Surface((w + expand*2, h + expand*2), pygame.SRCALPHA)
+        a = max(0, 28 - expand * 2)
+        pygame.draw.rect(g, (*color, a), (0, 0, w+expand*2, h+expand*2),
+                         border_radius=br + expand)
+        surf.blit(g, (x - expand, y - expand))
+    pygame.draw.rect(surf, color, rect, border_radius=br)
+    # Bright center stripe
+    stripe_w = max(2, w // 3)
+    stripe = pygame.Surface((stripe_w, h), pygame.SRCALPHA)
+    stripe.fill((*WHITE, 40))
+    surf.blit(stripe, (x + (w - stripe_w) // 2, y))
+
+def make_scanlines(w, h) -> pygame.Surface:
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    for y in range(0, h, 3):
+        pygame.draw.line(s, (0, 0, 0, 22), (0, y), (w, y))
+    return s
+
+def make_vignette(w, h) -> pygame.Surface:
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    for i in range(120):
+        a = int(90 * (i / 120) ** 2)
+        pygame.draw.rect(s, (0, 0, 0, a), (i, i, w - i*2, h - i*2), 1)
+    return s
+
+# ─────────────────────────────────────────────────────────
 def main():
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    clock = pygame.time.Clock()
-    f_lg = pygame.font.SysFont("Consolas", 60, bold=True)
-    f_sm = pygame.font.SysFont("Consolas", 20)
+    pygame.display.set_caption("NEON PONG")
+    clock  = pygame.time.Clock()
+
+    # Try to load Consolas; fall back gracefully
+    try:
+        f_score = pygame.font.SysFont("Consolas", 78, bold=True)
+        f_big   = pygame.font.SysFont("Consolas", 34, bold=True)
+        f_med   = pygame.font.SysFont("Consolas", 22, bold=True)
+        f_sm    = pygame.font.SysFont("Consolas", 16)
+        f_xs    = pygame.font.SysFont("Consolas", 13)
+    except:
+        f_score = pygame.font.SysFont(None, 78)
+        f_big   = pygame.font.SysFont(None, 34)
+        f_med   = pygame.font.SysFont(None, 22)
+        f_sm    = pygame.font.SysFont(None, 16)
+        f_xs    = pygame.font.SysFont(None, 13)
+
+    scanlines = make_scanlines(WIDTH, HEIGHT)
+    vignette  = make_vignette(WIDTH, HEIGHT)
 
     n = Network()
-    if n.p is None: return
-    my_y, voted = 315, False
+    if n.p is None:
+        screen.fill(BG)
+        err = f_big.render("COULD NOT CONNECT TO SERVER", True, RED)
+        screen.blit(err, err.get_rect(center=(WIDTH//2, HEIGHT//2)))
+        pygame.display.flip()
+        pygame.time.wait(3000)
+        return
+
+    my_y   = 315
+    voted  = False
+    tick   = 0
+
+    def lerp_color(a, b, t):
+        return tuple(int(a[i] + (b[i]-a[i]) * t) for i in range(3))
+
+    def pulse(speed=0.05, lo=0.5, hi=1.0):
+        return lo + (hi - lo) * (0.5 + 0.5 * math.sin(tick * speed))
+
+    def blit_center(txt_surf, cy, cx=WIDTH//2):
+        screen.blit(txt_surf, txt_surf.get_rect(center=(cx, cy)))
+
+    def draw_dashed_center():
+        for y in range(0, HEIGHT, 20):
+            pygame.draw.rect(screen, DIM, (WIDTH//2 - 2, y, 4, 11))
+
+    def draw_powerup_legend():
+        """Small legend in bottom-center showing what each icon means."""
+        items = list(PU_COLORS.items())
+        col_w = 110
+        total_w = col_w * len(items)
+        sx = (WIDTH - total_w) // 2
+        sy = HEIGHT - 22
+        for ptype, col in items:
+            icon = PU_ICON.get(ptype, "?")
+            lbl  = f_xs.render(f"{icon} {ptype[:3]}", True, col)
+            screen.blit(lbl, (sx, sy))
+            sx += col_w
+
+    def draw_hud(gs):
+        """Active-powerup timer bar along bottom of each side."""
+        # P1 wall timer (left side, bottom)
+        if gs["p1_wall"] > 0:
+            w = int(300 * gs["p1_wall"] / 380)
+            pygame.draw.rect(screen, (20, 60, 30), (20, HEIGHT-10, 300, 6), border_radius=3)
+            pygame.draw.rect(screen, BLUE,         (20, HEIGHT-10, w,   6), border_radius=3)
+            lbl = f_xs.render(f"WALL {gs['p1_wall']//60}s", True, BLUE)
+            screen.blit(lbl, (20, HEIGHT-26))
+
+        if gs["p2_wall"] > 0:
+            w = int(300 * gs["p2_wall"] / 380)
+            pygame.draw.rect(screen, (20, 60, 30), (WIDTH-320, HEIGHT-10, 300, 6), border_radius=3)
+            pygame.draw.rect(screen, BLUE,         (WIDTH-320, HEIGHT-10, w,   6), border_radius=3)
+            lbl = f_xs.render(f"WALL {gs['p2_wall']//60}s", True, BLUE)
+            screen.blit(lbl, (WIDTH-85, HEIGHT-26))
+
+        # Slow timer (centre)
+        if gs.get("slow_timer", 0) > 0:
+            w = int(200 * gs["slow_timer"] / 360)
+            pygame.draw.rect(screen, (20, 20, 60), (WIDTH//2-100, HEIGHT-10, 200, 6), border_radius=3)
+            pygame.draw.rect(screen, PURPLE,       (WIDTH//2-100, HEIGHT-10, w,   6), border_radius=3)
+            lbl = f_xs.render(f"SLOW {gs['slow_timer']//60}s", True, PURPLE)
+            blit_center(lbl, HEIGHT-26)
+
+        # Paddle size indicators
+        p1h = gs["p1_h"]
+        p2h = gs["p2_h"]
+        p1c = GREEN if p1h > 120 else (RED if p1h < 120 else GRAY)
+        p2c = GREEN if p2h > 120 else (RED if p2h < 120 else GRAY)
+        screen.blit(f_xs.render(f"H:{p1h}", True, p1c), (20, HEIGHT - 44))
+        rhs = f_xs.render(f"H:{p2h}", True, p2c)
+        screen.blit(rhs, (WIDTH - rhs.get_width() - 20, HEIGHT - 44))
 
     while True:
+        tick += 1
+
+        # ── Collect input ─────────────────────────────────
         input_data = my_y
         if not voted:
             keys = pygame.key.get_pressed()
             if keys[pygame.K_1]: input_data = "NORMAL"; voted = True
-            if keys[pygame.K_2]: input_data = "CHAOS"; voted = True
+            if keys[pygame.K_2]: input_data = "CHAOS";  voted = True
 
         game_state = n.send(input_data)
 
+        # ── DISCONNECTED screen ───────────────────────────
         if game_state == "DISCONNECTED":
-            screen.fill((0,0,0))
-            screen.blit(f_lg.render("KICKED / DISCONNECTED", True, (255,0,0)), (WIDTH//2-350, HEIGHT//2-50))
-            screen.blit(f_sm.render("Press ESC to Exit", True, (200,200,200)), (WIDTH//2-100, HEIGHT//2+50))
+            screen.fill(BG)
+            t = pulse(0.08, 0.3, 1.0)
+            col = lerp_color(RED, WHITE, t * 0.4)
+            msg  = f_big.render("KICKED / DISCONNECTED", True, col)
+            hint = f_sm.render("Press ESC to Exit", True, GRAY)
+            blit_center(msg,  HEIGHT//2 - 30)
+            blit_center(hint, HEIGHT//2 + 20)
+            screen.blit(scanlines, (0, 0))
             pygame.display.flip()
             for e in pygame.event.get():
-                if e.type == pygame.QUIT or (e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE): return
+                if e.type == pygame.QUIT: return
+                if e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE: return
+            clock.tick(60)
             continue
 
-        screen.fill((10, 10, 25))
+        # ── DRAW ─────────────────────────────────────────
+        screen.fill(BG)
+        draw_dashed_center()
 
+        # ══ WAITING ══════════════════════════════════════
         if not game_state["active"]:
-            screen.blit(f_lg.render("WAITING FOR PLAYERS...", True, (255,255,255)), (WIDTH//2-350, HEIGHT//2))
-        elif game_state["mode"] == "voting":
-            screen.blit(f_lg.render("VOTE: [1] OR [2]", True, (255,255,255)), (WIDTH//2-250, HEIGHT//2))
-        else:
-            for b in game_state["bricks"]:
-                if b[4]: pygame.draw.rect(screen, (50, 50, 70), (b[0], b[1], b[2], b[3]), border_radius=5)
-            if game_state["p1_wall"]: pygame.draw.rect(screen, (0, 255, 0), (0, 0, 10, HEIGHT))
-            if game_state["p2_wall"]: pygame.draw.rect(screen, (0, 255, 0), (WIDTH-10, 0, 10, HEIGHT))
-            for c in game_state["crates"]:
-                pygame.draw.rect(screen, (255, 255, 0), (c[0], c[1], 35, 35), border_radius=5)
-                screen.blit(f_sm.render(c[2][0], True, (0,0,0)), (c[0]+12, c[1]+8))
-            
-            bx, by = game_state["ball_pos"]
-            pygame.draw.circle(screen, (255, 255, 255), (int(bx), int(by)), 12)
-            for fb in game_state["fake_balls"]: pygame.draw.circle(screen, (80, 80, 90), (int(fb[0][0]), int(fb[0][1])), 10)
-            
-            pygame.draw.rect(screen, (0, 255, 255), (40, game_state["p1_y"], 15, game_state["p1_h"]), border_radius=5)
-            pygame.draw.rect(screen, (255, 0, 255), (WIDTH-55, game_state["p2_y"], 15, game_state["p2_h"]), border_radius=5)
-            screen.blit(f_lg.render(str(game_state["p1_score"]), True, (0, 255, 255)), (WIDTH//4, 50))
-            screen.blit(f_lg.render(str(game_state["p2_score"]), True, (255, 0, 255)), (WIDTH*3//4, 50))
+            p = pulse(0.04)
+            col = lerp_color((60, 70, 140), (120, 200, 255), p)
+            msg  = f_big.render("WAITING FOR OPPONENT...", True, col)
+            hint = f_sm.render("W / S  to move   |   [1] Normal   [2] Chaos", True, GRAY)
+            blit_center(msg,  HEIGHT//2 - 20)
+            blit_center(hint, HEIGHT//2 + 30)
 
-        for i in range(0, HEIGHT, 4): pygame.draw.line(screen, (0,0,0), (0,i), (WIDTH, i), 1)
+        # ══ VOTING ═══════════════════════════════════════
+        elif game_state["mode"] == "voting":
+            lbl = f_big.render("CHOOSE YOUR GAME MODE:", True, WHITE)
+            blit_center(lbl, HEIGHT//2 - 80)
+
+            p = pulse(0.1)
+            c1 = lerp_color(CYAN,    WHITE, p * 0.3) if not voted else GRAY
+            c2 = lerp_color(MAGENTA, WHITE, p * 0.3) if not voted else GRAY
+
+            o1 = f_big.render("[1]  NORMAL", True, c1)
+            o2 = f_big.render("[2]  CHAOS",  True, c2)
+            screen.blit(o1, (WIDTH//2 - 280, HEIGHT//2 - 20))
+            screen.blit(o2, (WIDTH//2 + 60,  HEIGHT//2 - 20))
+
+            d1 = f_sm.render("Classic bricks", True, (80,160,160))
+            d2 = f_sm.render("More powerups + speed", True, (160,80,160))
+            screen.blit(d1, (WIDTH//2 - 260, HEIGHT//2 + 30))
+            screen.blit(d2, (WIDTH//2 + 70,  HEIGHT//2 + 30))
+
+            if voted:
+                w = f_sm.render("Voted! Waiting for opponent...", True, (120,140,200))
+                blit_center(w, HEIGHT//2 + 80)
+
+        # ══ PLAYING ══════════════════════════════════════
+        else:
+            gs = game_state
+
+            # Bricks
+            for b in gs["bricks"]:
+                if b[4]:
+                    pygame.draw.rect(screen, (35, 40, 75),  (b[0], b[1], b[2], b[3]), border_radius=4)
+                    pygame.draw.rect(screen, (65, 75, 130), (b[0], b[1], b[2], b[3]), 1, border_radius=4)
+
+            # Wall powerup effects
+            if gs["p1_wall"] > 0:
+                a = min(180, 60 + gs["p1_wall"])
+                wall_s = pygame.Surface((14, HEIGHT), pygame.SRCALPHA)
+                wall_s.fill((*BLUE, min(a, 120)))
+                screen.blit(wall_s, (0, 0))
+                pygame.draw.rect(screen, BLUE, (0, 0, 3, HEIGHT))
+
+            if gs["p2_wall"] > 0:
+                a = min(180, 60 + gs["p2_wall"])
+                wall_s = pygame.Surface((14, HEIGHT), pygame.SRCALPHA)
+                wall_s.fill((*BLUE, min(a, 120)))
+                screen.blit(wall_s, (WIDTH - 14, 0))
+                pygame.draw.rect(screen, BLUE, (WIDTH-3, 0, 3, HEIGHT))
+
+            # Crates — pulsing, color-coded
+            for c in gs["crates"]:
+                col = PU_COLORS.get(c[2], YELLOW)
+                p   = 0.65 + 0.35 * math.sin(tick * 0.1 + c[0] * 0.01)
+                pc  = tuple(int(v * p) for v in col)
+                cx, cy = int(c[0]) - 18, int(c[1]) - 18
+                pygame.draw.rect(screen, pc,  (cx, cy, 36, 36), border_radius=6)
+                pygame.draw.rect(screen, col, (cx, cy, 36, 36), 2, border_radius=6)
+                icon = f_sm.render(PU_ICON.get(c[2], "?"), True, BG)
+                screen.blit(icon, icon.get_rect(center=(int(c[0]), int(c[1]))))
+
+            # Fake balls (dim, no glow)
+            for fb in gs["fake_balls"]:
+                fx, fy = int(fb[0][0]), int(fb[0][1])
+                pygame.draw.circle(screen, (45, 48, 80), (fx, fy), 10)
+                pygame.draw.circle(screen, (70, 75, 110), (fx, fy), 10, 1)
+
+            # Extra balls (MULTI — bright but smaller)
+            for eb in gs.get("extra_balls", []):
+                ex, ey = int(eb[0][0]), int(eb[0][1])
+                draw_glowing_circle(screen, YELLOW, (ex, ey), 9, 45)
+
+            # Main ball
+            bx, by = int(gs["ball_pos"][0]), int(gs["ball_pos"][1])
+            draw_glowing_circle(screen, WHITE, (bx, by), 12, 60)
+
+            # Paddles
+            p1_rect = (38, gs["p1_y"], 14, gs["p1_h"])
+            p2_rect = (WIDTH - 52, gs["p2_y"], 14, gs["p2_h"])
+            draw_glowing_paddle(screen, CYAN,    p1_rect)
+            draw_glowing_paddle(screen, MAGENTA, p2_rect)
+
+            # Scores
+            s1 = f_score.render(str(gs["p1_score"]), True, CYAN)
+            s2 = f_score.render(str(gs["p2_score"]), True, MAGENTA)
+            screen.blit(s1, s1.get_rect(center=(WIDTH//4,     55)))
+            screen.blit(s2, s2.get_rect(center=(WIDTH*3//4,   55)))
+
+            # HUD
+            draw_hud(gs)
+            draw_powerup_legend()
+
+        # Overlay effects
+        screen.blit(scanlines, (0, 0))
+        screen.blit(vignette,  (0, 0))
+
+        # ── Events ────────────────────────────────────────
         for e in pygame.event.get():
             if e.type == pygame.QUIT: return
+            if e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE: return
 
         keys = pygame.key.get_pressed()
-        if keys[pygame.K_w] and my_y > 0: my_y -= 12
+        if keys[pygame.K_w] and my_y > 0:            my_y -= 12
         if keys[pygame.K_s] and my_y < HEIGHT - 100: my_y += 12
+
         pygame.display.flip()
         clock.tick(60)
 
