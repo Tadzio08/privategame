@@ -179,21 +179,16 @@ def main():
             sx += col_w
 
     def draw_hud(gs):
-        """Active-powerup timer bar along bottom of each side."""
-        # P1 wall timer (left side, bottom)
-        if gs["p1_wall"] > 0:
-            w = int(300 * gs["p1_wall"] / 380)
-            pygame.draw.rect(screen, (20, 60, 30), (20, HEIGHT-10, 300, 6), border_radius=3)
-            pygame.draw.rect(screen, BLUE,         (20, HEIGHT-10, w,   6), border_radius=3)
-            lbl = f_xs.render(f"WALL {gs['p1_wall']//60}s", True, BLUE)
-            screen.blit(lbl, (20, HEIGHT-26))
-
-        if gs["p2_wall"] > 0:
-            w = int(300 * gs["p2_wall"] / 380)
-            pygame.draw.rect(screen, (20, 60, 30), (WIDTH-320, HEIGHT-10, 300, 6), border_radius=3)
-            pygame.draw.rect(screen, BLUE,         (WIDTH-320, HEIGHT-10, w,   6), border_radius=3)
-            lbl = f_xs.render(f"WALL {gs['p2_wall']//60}s", True, BLUE)
-            screen.blit(lbl, (WIDTH-85, HEIGHT-26))
+        """Active-powerup status bars along bottom of screen."""
+        # Wall brick counts (per player, left/right corners)
+        p1_wb = sum(1 for wb in gs.get("wall_bricks", []) if wb[5] == 0)
+        p2_wb = sum(1 for wb in gs.get("wall_bricks", []) if wb[5] == 1)
+        if p1_wb > 0:
+            lbl = f_xs.render(f"WALL  {p1_wb} bricks", True, CYAN)
+            screen.blit(lbl, (20, HEIGHT - 26))
+        if p2_wb > 0:
+            lbl = f_xs.render(f"{p2_wb} bricks  WALL", True, MAGENTA)
+            screen.blit(lbl, (WIDTH - lbl.get_width() - 20, HEIGHT - 26))
 
         # Slow timer (centre)
         if gs.get("slow_timer", 0) > 0:
@@ -287,20 +282,17 @@ def main():
                     pygame.draw.rect(screen, (35, 40, 75),  (b[0], b[1], b[2], b[3]), border_radius=4)
                     pygame.draw.rect(screen, (65, 75, 130), (b[0], b[1], b[2], b[3]), 1, border_radius=4)
 
-            # Wall powerup effects
-            if gs["p1_wall"] > 0:
-                a = min(180, 60 + gs["p1_wall"])
-                wall_s = pygame.Surface((14, HEIGHT), pygame.SRCALPHA)
-                wall_s.fill((*BLUE, min(a, 120)))
-                screen.blit(wall_s, (0, 0))
-                pygame.draw.rect(screen, BLUE, (0, 0, 3, HEIGHT))
-
-            if gs["p2_wall"] > 0:
-                a = min(180, 60 + gs["p2_wall"])
-                wall_s = pygame.Surface((14, HEIGHT), pygame.SRCALPHA)
-                wall_s.fill((*BLUE, min(a, 120)))
-                screen.blit(wall_s, (WIDTH - 14, 0))
-                pygame.draw.rect(screen, BLUE, (WIDTH-3, 0, 3, HEIGHT))
+            # Wall powerup — physical brick columns (colour-coded by owner, hp shown as pips)
+            WALL_COLS = [CYAN, MAGENTA]
+            for wb in gs.get("wall_bricks", []):
+                wx, wy, ww, wh, hp, owner = wb
+                base_col = WALL_COLS[owner]
+                fade = hp / 3.0
+                col  = tuple(int(base_col[j] * fade + 40 * (1 - fade)) for j in range(3))
+                pygame.draw.rect(screen, col, (wx, wy, ww, wh), border_radius=4)
+                pygame.draw.rect(screen, base_col, (wx, wy, ww, wh), 2, border_radius=4)
+                for pip in range(hp):
+                    pygame.draw.circle(screen, WHITE, (wx + ww//2, wy + 10 + pip * 14), 3)
 
             # Crates — pulsing, color-coded
             for c in gs["crates"]:
